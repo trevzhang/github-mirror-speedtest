@@ -55,6 +55,57 @@
     .copy-btn:hover {
       background-color: #e0e0e0;
     }
+    #control-panel {
+      display: flex;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+    #control-panel > * {
+      margin-right: 10px;
+    }
+    #repo-url {
+      flex-grow: 1;
+    }
+    .command {
+      margin-bottom: 10px;
+    }
+    .command pre {
+      background-color: #f0f0f0;
+      padding: 10px;
+      border-radius: 5px;
+      margin: 5px 0;
+    }
+    #command-output {
+      margin-top: 20px;
+    }
+    .command {
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    }
+    .command pre {
+      background-color: #f0f0f0;
+      padding: 10px;
+      border-radius: 5px;
+      margin: 5px 0;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      flex-grow: 1;
+    }
+    #command-output {
+      margin-top: 20px;
+    }
+    .copy-btn {
+      margin-left: 10px;
+      cursor: pointer;
+      padding: 5px 10px;
+      background-color: #f0f0f0;
+      border: 1px solid #ccc;
+      border-radius: 3px;
+    }
+    .copy-btn:hover {
+      background-color: #e0e0e0;
+    }
   </style>
 </head>
 <body>
@@ -83,18 +134,27 @@ https://gh.sixyin.com
 https://gh.bink.cc
 https://gh.noki.icu
 </textarea></div>
-<div>
+<div id="control-panel">
   <button id="btn-test-all">测试全部</button>
   <button id="btn-get-fastest">获取最快</button>
   <button id="btn-stop" disabled>停止</button>
+  <input type="text" id="repo-url" placeholder="输入 GitHub 仓库地址">
+  <input type="text" id="user-token" placeholder="私有仓库Token（可选）">
+  <button id="generate-commands">生成仓库命令</button>
 </div>
+<div id="command-output"></div>
 <div id="div-output"></div>
+
 <script>
   const ipt_mirrors = document.getElementById('ipt-mirrors')
   const btn_test_all = document.getElementById('btn-test-all')
   const btn_get_fastest = document.getElementById('btn-get-fastest')
   const btn_stop = document.getElementById('btn-stop')
   const div_output = document.getElementById('div-output')
+  const repoUrlInput = document.getElementById('repo-url')
+  const userTokenInput = document.getElementById('user-token')
+  const generateCommandsBtn = document.getElementById('generate-commands')
+  const commandOutput = document.getElementById('command-output')
 
   const TIME_THRESHOLDS = [500, 1000, 3000]
   let stopTesting = false
@@ -289,8 +349,65 @@ https://gh.noki.icu
   const setButtonDisabled = (disabled) => {
     btn_test_all.disabled = disabled
     btn_get_fastest.disabled = disabled
-    btn_stop.disabled = !disabled
+    generateCommandsBtn.disabled = disabled
   }
+
+  // 添加复制命令的函数
+  function copyCommand(button) {
+    const command = button.previousElementSibling.textContent
+    navigator.clipboard.writeText(command).then(() => {
+      button.textContent = '已复制'
+      setTimeout(() => {
+        button.textContent = '复制'
+      }, 2000)
+    })
+  }
+
+  generateCommandsBtn.addEventListener('click', () => {
+    const repoUrl = repoUrlInput.value.trim()
+    const userToken = userTokenInput.value.trim()
+    if (!repoUrl) {
+      alert('请输入有效的 GitHub 仓库地址')
+      return
+    }
+
+    const fastestMirror = Array.from(div_output.children)
+      .find(el => el.dataset.success === 'true')
+      ?.querySelector('span:nth-child(3)')
+      ?.textContent
+
+    if (!fastestMirror) {
+      alert('请先测试镜像或获取最快镜像')
+      return
+    }
+
+    const repoName = repoUrl.split('/').pop().replace('.git', '')
+    const isPrivate = !!userToken
+    const commands = []
+
+    // Git clone commands
+    commands.push({ type: 'comment', content: 'Git clone' })
+    commands.push({ type: 'command', content: `git clone ${fastestMirror}/${repoUrl}` })
+    if (isPrivate) {
+      commands.push({ type: 'comment', content: 'Git clone (私有仓库)' })
+      commands.push({ type: 'command', content: `git clone https://${userToken}@${fastestMirror.replace('https://', '')}/${repoUrl}` })
+    }
+
+    // wget & curl commands
+    commands.push({ type: 'comment', content: 'wget' })
+    commands.push({ type: 'command', content: `wget ${fastestMirror}/${repoUrl}/archive/master.zip` })
+    commands.push({ type: 'command', content: `wget ${fastestMirror}/https://raw.githubusercontent.com/${repoUrl.split('github.com/')[1]}/main/README.md` })
+    commands.push({ type: 'comment', content: 'curl' })
+    commands.push({ type: 'command', content: `curl -O ${fastestMirror}/${repoUrl}/archive/master.zip` })
+    commands.push({ type: 'command', content: `curl -O ${fastestMirror}/https://raw.githubusercontent.com/${repoUrl.split('github.com/')[1]}/main/README.md` })
+
+    commandOutput.innerHTML = commands.map(cmd => 
+      `<div class="command">
+        <pre>${cmd.type === 'comment' ? '# ' + cmd.content : cmd.content}</pre>
+        ${cmd.type === 'command' ? '<button class="copy-btn" onclick="copyCommand(this)">复制</button>' : ''}
+      </div>`
+    ).join('')
+  })
 
   btn_test_all.addEventListener('click', async () => {
     setButtonDisabled(true)
@@ -300,15 +417,7 @@ https://gh.noki.icu
 
   btn_get_fastest.addEventListener('click', async () => {
     setButtonDisabled(true)
-    const fastest = await getFastest(getMirrors())
-    if (fastest) {
-      const fastestElement = Array.from(div_output.querySelectorAll('.mirror-result'))
-        .find(el => el.textContent.includes(fastest.mirror))
-      if (fastestElement) {
-        fastestElement.style.backgroundColor = '#e6ffe6'
-        fastestElement.scrollIntoView({ behavior: 'smooth', block: 'center' })
-      }
-    }
+    await getFastest(getMirrors())
     setButtonDisabled(false)
   })
 
