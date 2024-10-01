@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="zh-cmn-Hans">
+<head>
+  <meta charset="UTF-8">
+  <title>Github 镜像加速节点测试</title>
+  <style>
+    * {
+      font-family: "JetBrains Mono", source-code-pro, "SF Mono", Monaco, Menlo, Consolas, "Ubuntu Mono", "Liberation Mono", "DejaVu Sans Mono", "Courier New", -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', monospace;
+    }
+    .mirror-result {
+      display: flex;
+      align-items: center;
+      margin-bottom: 10px;
+      transition: all 0.3s ease;
+    }
+    .mirror-result .icon {
+      width: 24px;
+      height: 24px;
+      margin-right: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+    }
+    .mirror-result .status {
+      margin-right: 10px;
+      font-weight: bold;
+      min-width: 60px;
+    }
+    .success { color: green; }
+    .fail { color: red; }
+    .pending { color: orange; }
+    .cancelled { color: #888; }
+    .progress-bar {
+      width: 100px;
+      height: 10px;
+      background-color: #f0f0f0;
+      margin-right: 10px;
+      border-radius: 5px;
+      overflow: hidden;
+    }
+    .progress-bar-fill {
+      height: 100%;
+      width: 0%;
+      transition: width 0.5s ease-in-out, background-color 0.5s ease-in-out;
+    }
+    .copy-btn {
+      margin-left: 10px;
+      cursor: pointer;
+      padding: 2px 5px;
+      background-color: #f0f0f0;
+      border: 1px solid #ccc;
+      border-radius: 3px;
+    }
+    .copy-btn:hover {
+      background-color: #e0e0e0;
+    }
+  </style>
+</head>
+<body>
+<h3>Github 镜像加速节点测试</h3>
+<div><textarea id="ipt-mirrors" rows="10" cols="50" placeholder="输入镜像地址，每行一个">
+https://github.moeyy.xyz
+https://ghproxy.net
+https://gh-proxy.com
+https://gh-proxy.llyke.com
+https://gh.cache.cloudns.org
+https://gh.ddlc.top
+https://slink.ltd
+https://gh.con.sh
+https://sciproxy.com
+https://cf.ghproxy.cc
+https://ghproxy.cn
+https://ghproxy.cc
+https://gh.jiasu.in
+https://mirror.ghproxy.com
+https://hub.gitmirror.com
+https://ghps.cc
+https://ghproxy.org
+https://ghproxy.top
+https://gh.ezctrl.cn
+https://gh.sixyin.com
+https://gh.bink.cc
+https://gh.noki.icu
+</textarea></div>
+<div>
+  <button id="btn-test-all">测试全部</button>
+  <button id="btn-get-fastest">获取最快</button>
+  <button id="btn-stop" disabled>停止</button>
+</div>
+<div id="div-output"></div>
+<script>
+  const ipt_mirrors = document.getElementById('ipt-mirrors')
+  const btn_test_all = document.getElementById('btn-test-all')
+  const btn_get_fastest = document.getElementById('btn-get-fastest')
+  const btn_stop = document.getElementById('btn-stop')
+  const div_output = document.getElementById('div-output')
+
+  const TIME_THRESHOLDS = [500, 1000, 3000]
+  let stopTesting = false
+
+  const createMirrorResultElement = (mirror) => {
+    const resultDiv = document.createElement('div')
+    resultDiv.className = 'mirror-result'
+    resultDiv.innerHTML = `
+      <div class="icon pending">⏳</div>
+      <span class="status pending">等待中</span>
+      <span>${mirror}</span>
+      <div class="progress-bar"><div class="progress-bar-fill"></div></div>
+      <span class="time"></span>
+      <button class="copy-btn">复制</button>
+    `
+    const copyBtn = resultDiv.querySelector('.copy-btn')
+    copyBtn.addEventListener('click', () => {
+      navigator.clipboard.writeText(mirror).then(() => {
+        copyBtn.textContent = '已复制'
+        setTimeout(() => {
+          copyBtn.textContent = '复制'
+        }, 2000)
+      })
+    })
+    return resultDiv
+  }
+
+  const getColorForTime = (time) => {
+    const gradientColors = [
+      [0, 255, 0],    // 绿色
+      [255, 255, 0],  // 黄色
+      [255, 0, 0]     // 红色
+    ]
+
+    let index = TIME_THRESHOLDS.findIndex(threshold => time <= threshold)
+    if (index === -1) index = TIME_THRESHOLDS.length
+
+    const ratio = index / TIME_THRESHOLDS.length
+    const colorIndex = Math.min(Math.floor(ratio * (gradientColors.length - 1)), gradientColors.length - 2)
+    const [r1, g1, b1] = gradientColors[colorIndex]
+    const [r2, g2, b2] = gradientColors[colorIndex + 1]
+
+    const subRatio = (ratio - colorIndex / (gradientColors.length - 1)) * (gradientColors.length - 1)
+    const r = Math.round(r1 + (r2 - r1) * subRatio)
+    const g = Math.round(g1 + (g2 - g1) * subRatio)
+    const b = Math.round(b1 + (b2 - b1) * subRatio)
+
+    return `rgb(${r}, ${g}, ${b})`
+  }
+
+  const updateMirrorResult = (element, { success, time, cancelled }) => {
+    const icon = element.querySelector('.icon')
+    const status = element.querySelector('.status')
+    const progressBar = element.querySelector('.progress-bar-fill')
+    const timeSpan = element.querySelector('.time')
+
+    if (cancelled) {
+      icon.textContent = '⏹️'
+      icon.className = 'icon cancelled'
+      status.textContent = '已取消'
+      status.className = 'status cancelled'
+      progressBar.style.width = '100%'
+      progressBar.style.backgroundColor = '#888'
+      timeSpan.textContent = ''
+    } else {
+      icon.textContent = success ? '✅' : '❌'
+      icon.className = `icon ${success ? 'success' : 'fail'}`
+      status.textContent = success ? '成功' : '失败'
+      status.className = `status ${success ? 'success' : 'fail'}`
+      progressBar.style.width = '100%'
+      progressBar.style.backgroundColor = success ? getColorForTime(time) : 'red'
+      timeSpan.textContent = `${time}ms`
+    }
+    element.dataset.time = time
+    element.dataset.success = success
+    element.dataset.cancelled = cancelled
+  }
+
+  const testMirror = (mirror, element) => {
+    if (!mirror.endsWith('/')) mirror += '/'
+    return new Promise((resolve) => {
+      const start = Date.now()
+      const img = new Image()
+      const progressBar = element.querySelector('.progress-bar-fill')
+      const timeSpan = element.querySelector('.time')
+      let intervalId = setInterval(() => {
+        if (stopTesting) {
+          clearInterval(intervalId)
+          img.src = ''
+          const result = { mirror, time: Date.now() - start, success: false, cancelled: true }
+          updateMirrorResult(element, result)
+          resolve(result)
+          return
+        }
+        const elapsed = Date.now() - start
+        progressBar.style.width = `${Math.min(elapsed / 50, 100)}%`
+        progressBar.style.backgroundColor = getColorForTime(elapsed)
+        timeSpan.textContent = `${elapsed}ms`
+      }, 50)
+
+      img.onload = () => {
+        clearInterval(intervalId)
+        const result = { mirror, time: Date.now() - start, success: true, cancelled: false }
+        updateMirrorResult(element, result)
+        resolve(result)
+      }
+      img.onerror = () => {
+        clearInterval(intervalId)
+        const result = { mirror, time: Date.now() - start, success: false, cancelled: false }
+        updateMirrorResult(element, result)
+        resolve(result)
+      }
+      img.src = `${mirror}https://raw.githubusercontent.com/trevzhang/Pictures/master/watermark/success.svg?t=${Date.now()}`
+    })
+  }
+
+  const sortMirrorResults = () => {
+    const results = Array.from(div_output.children)
+    results.sort((a, b) => {
+      const aSuccess = a.dataset.success === 'true'
+      const bSuccess = b.dataset.success === 'true'
+      const aCancelled = a.dataset.cancelled === 'true'
+      const bCancelled = b.dataset.cancelled === 'true'
+      if (aSuccess && !bSuccess) return -1
+      if (!aSuccess && bSuccess) return 1
+      if (aCancelled && !bCancelled) return 1
+      if (!aCancelled && bCancelled) return -1
+      return parseInt(a.dataset.time) - parseInt(b.dataset.time)
+    })
+    results.forEach(result => div_output.appendChild(result))
+  }
+
+  const clearPreviousResults = () => {
+    div_output.innerHTML = ''
+  }
+
+  const testAllMirrors = async (mirrors) => {
+    stopTesting = false
+    btn_stop.disabled = false
+    clearPreviousResults()
+    const elements = mirrors.map(mirror => {
+      const element = createMirrorResultElement(mirror)
+      div_output.appendChild(element)
+      return element
+    })
+
+    const results = await Promise.all(mirrors.map((mirror, index) => 
+      testMirror(mirror, elements[index]).then(result => {
+        sortMirrorResults()
+        return result
+      })
+    ))
+
+    btn_stop.disabled = true
+    return results
+  }
+
+  const getFastest = async (mirrors) => {
+    stopTesting = false
+    btn_stop.disabled = false
+    clearPreviousResults()
+    const elements = mirrors.map(mirror => {
+      const element = createMirrorResultElement(mirror)
+      div_output.appendChild(element)
+      return element
+    })
+
+    return new Promise((resolve) => {
+      let resolved = false
+      const promises = mirrors.map((mirror, index) => 
+        testMirror(mirror, elements[index]).then(result => {
+          if (!resolved && result.success) {
+            resolved = true
+            stopTesting = true
+            resolve(result)
+          }
+          return result
+        })
+      )
+
+      Promise.all(promises).then(results => {
+        if (!resolved) {
+          resolve(null) // 如果没有成功的结果，返回 null
+        }
+        sortMirrorResults()
+      })
+    })
+  }
+
+  const getMirrors = () => ipt_mirrors.value.split(/\s+/).filter((it) => !!it)
+
+  const setButtonDisabled = (disabled) => {
+    btn_test_all.disabled = disabled
+    btn_get_fastest.disabled = disabled
+    btn_stop.disabled = !disabled
+  }
+
+  btn_test_all.addEventListener('click', async () => {
+    setButtonDisabled(true)
+    await testAllMirrors(getMirrors())
+    setButtonDisabled(false)
+  })
+
+  btn_get_fastest.addEventListener('click', async () => {
+    setButtonDisabled(true)
+    const fastest = await getFastest(getMirrors())
+    if (fastest) {
+      const fastestElement = Array.from(div_output.querySelectorAll('.mirror-result'))
+        .find(el => el.textContent.includes(fastest.mirror))
+      if (fastestElement) {
+        fastestElement.style.backgroundColor = '#e6ffe6'
+        fastestElement.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      }
+    }
+    setButtonDisabled(false)
+  })
+
+  btn_stop.addEventListener('click', () => {
+    stopTesting = true
+    btn_stop.disabled = true
+  })
+</script>
+</body>
+</html>
